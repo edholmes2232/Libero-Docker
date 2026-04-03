@@ -46,6 +46,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libp11-kit0 libgmp10 libnsl2 libnss-mdns libnss-myhostname \
     # System libs
     libpcre3 libpcre2-8-0 liblz4-1 liblzma5 libzstd1 libxxhash0 \
+    # System libs
+    libpcre3 libpcre2-8-0 liblz4-1 liblzma5 libzstd1 libxxhash0 \
     libseccomp2 libsecret-1-0 libdbus-1-dev libgstreamer-plugins-base1.0-0 \
     libicu-dev libtool libncurses-dev libncurses6 libncursesw6 \
     libice-dev libsm-dev libvte-2.91-common libvte-common \
@@ -101,3 +103,4 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
+
