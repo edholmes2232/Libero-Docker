@@ -1,0 +1,7 @@
+# Don't commit large installer files or licence keys
+installer/*.zip
+installer/*.dat
+installer/*.lic
+
+# Ignore local environment variables
+.env

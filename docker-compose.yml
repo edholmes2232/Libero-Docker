@@ -1,0 +1,12 @@
+services:
+  libero:
+    image: libero:latest
+    build:
+      context: .
+      additional_contexts:
+        - libero-installer=${LIBERO_INSTALLER_PATH:-./installer}
+        - softconsole-installer=${SOFTCONSOLE_INSTALLER_PATH:-./installer}
+    # Temporary runtime mount to let you explore the installer manually
+    volumes:
+      - ${LIBERO_INSTALLER_PATH:-./installer}:/mnt/installer
+      - ${SOFTCONSOLE_INSTALLER_PATH:-./installer}:/mnt/softconsole

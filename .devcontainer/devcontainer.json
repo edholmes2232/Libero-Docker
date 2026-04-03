@@ -1,0 +1,16 @@
+{
+    "name": "Libero SoC Dev Container",
+    "image": "ghcr.io/edholmes2232/libero-docker:latest",
+    "remoteUser": "root",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools"
+            ]
+        }
+    },
+    "runArgs": [
+        "--hostname=libero-dev"
+    ],
+    "postCreateCommand": "echo 'Libero SoC dev environment ready.'"
+}
