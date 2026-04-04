@@ -72,7 +72,7 @@ if [ -f "$LICENSE_FILE" ]; then
         # Format raw "e897447848b1" → "e8:97:44:78:48:b1"
         LICENSE_MAC=$(echo "$LICENSE_MAC_RAW" | sed 's/\(..\)/\1:/g; s/:$//')
         # Grab all MACs from container interfaces
-        CONTAINER_MACS=$(ip link show 2>/dev/null | awk '/link\/ether/{print $2}' | tr '[:upper:]' '[:lower:]')
+        CONTAINER_MACS=$(cat /sys/class/net/*/address 2>/dev/null | tr '[:upper:]' '[:lower:]')
 
         if ! echo "$CONTAINER_MACS" | grep -qF "$LICENSE_MAC"; then
             echo "==========================================================================="
