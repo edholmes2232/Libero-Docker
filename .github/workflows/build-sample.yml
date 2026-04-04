@@ -1,0 +1,35 @@
+name: Build Sample
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-sample:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Write license file from secret
+        run: |
+          echo "${{ secrets.LIBERO_LICENSE_B64 }}" | base64 -d > /tmp/license.dat
+
+      - name: Parse license SERVER line
+        id: license
+        run: |
+          HOST=$(awk '/^SERVER/{print $2; exit}' /tmp/license.dat)
+          MAC_RAW=$(awk '/^SERVER/{print tolower($3); exit}' /tmp/license.dat)
+          MAC=$(echo "$MAC_RAW" | sed 's/\(..\)/\1:/g; s/:$//')
+          echo "hostname=$HOST" >> "$GITHUB_OUTPUT"
+          echo "mac=$MAC" >> "$GITHUB_OUTPUT"
+
+      - name: Build sample project
+        run: |
+          docker run --rm \
+            --hostname "${{ steps.license.outputs.hostname }}" \
+            --mac-address "${{ steps.license.outputs.mac }}" \
+            -v /tmp/license.dat:/usr/local/microchip/license:ro \
+            docker.io/edholmes2232/libero:2025.2 \
+            bash -c "cd /usr/local/microchip/Libero_SoC_2025.2/Libero_SoC/Designer/scripts/sample/ && libero script:run.tcl"
