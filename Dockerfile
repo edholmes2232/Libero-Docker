@@ -1,16 +1,14 @@
-# syntax=docker/dockerfile:1
 FROM ubuntu:22.04
 
+# Stop apt from prompting for timezone etc
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Configuration — update these to match your installer version
-ARG LIBERO_SH="Libero_SoC_2025.2_offline_lin.sh"
-ARG LIBERO_MD5="4ae7ad607a9d2f08e75ed3fd27d623e8"
+# Extract Libero version info from installer name, e.g. "Libero_SoC_2025.2_offline_lin.sh"
+ARG LIBERO_SH=Libero_SoC_2025.2_offline_lin.sh
+ARG LIBERO_MD5=4ae7ad607a9d2f08e75ed3fd27d623e8
 
-# =============================================================================
-# Dependencies
-# =============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install Libero prerequisites 
+RUN apt-get update -yqq && apt-get install -yqq --no-install-recommends \
     # Core tools
     unzip ksh xdg-utils \
     # X11 / XCB
@@ -46,21 +44,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libp11-kit0 libgmp10 libnsl2 libnss-mdns libnss-myhostname \
     # System libs
     libpcre3 libpcre2-8-0 liblz4-1 liblzma5 libzstd1 libxxhash0 \
-    # System libs
-    libpcre3 libpcre2-8-0 liblz4-1 liblzma5 libzstd1 libxxhash0 \
     libseccomp2 libsecret-1-0 libdbus-1-dev libgstreamer-plugins-base1.0-0 \
     libicu-dev libtool libncurses-dev libncurses6 libncursesw6 \
     libice-dev libsm-dev libvte-2.91-common libvte-common \
+    # Compilers for LD_PRELOAD hack
+    build-essential gcc \
     && rm -rf /var/lib/apt/lists/*
 
 # =============================================================================
-# Step 1: License — COPY from installer/ dir (fails if missing)
-# =============================================================================
-RUN mkdir -p /usr/share/desktop-directories
-COPY installer/license /usr/local/microchip/license
-
-# =============================================================================
-# Step 2: MD5 Verification
+# Step 1: MD5 Verification
 # =============================================================================
 RUN --mount=type=bind,from=libero-installer,target=/mnt/installer \
     if [ ! -f "/mnt/installer/$LIBERO_SH" ]; then \
@@ -73,27 +65,32 @@ RUN --mount=type=bind,from=libero-installer,target=/mnt/installer \
     { echo "ERROR: MD5 mismatch!"; exit 1; }
 
 # =============================================================================
-# Step 3: Install Libero
+# Step 2: Install Libero
 # =============================================================================
+RUN mkdir -p /usr/share/desktop-directories
+
 RUN --mount=type=bind,from=libero-installer,target=/mnt/installer \
     cd /mnt/installer/ && \
     ./$LIBERO_SH \
     --accept-licenses \
     --accept-messages \
-    --root /usr/local/microchip/Libero_SoC_2025.2/ \
+    --root /usr/local/microchip/Libero_SoC_2025.2 \
     --confirm-command install Libero_SoC SmartHLS PFSoC_MSS_Configurator Program_Debug MegaVault \
     CommonDir=/usr/local/microchip/common \
     --verbose
 
 # =============================================================================
-# Step 4: Install SoftConsole
+# Step 3: Compile snpslmd overlayfs workaround & wrapper
 # =============================================================================
-RUN --mount=type=bind,from=softconsole-installer,target=/mnt/softconsole \
-    cd /mnt/softconsole/ && \
-    ./Microchip-SoftConsole-v2022.2-RISC-V-747-linux-x64-installer.run \
-    --mode unattended \
-    --unattendedmodeui none \
-    --prefix /usr/local/microchip/SoftConsole-v2022.2-RISC-V-747
+COPY snpslmd-workaround.c /usr/local/microchip/snpslmd-workaround.c
+RUN gcc -ldl -shared -fPIC /usr/local/microchip/snpslmd-workaround.c -o /usr/local/microchip/Libero_SoC_2025.2/LicenseDaemons/snpslmd-workaround.so && \
+    # Rename original binary
+    mv /usr/local/microchip/Libero_SoC_2025.2/LicenseDaemons/snpslmd /usr/local/microchip/Libero_SoC_2025.2/LicenseDaemons/snpslmd_bin && \
+    # Create wrapper
+    echo '#!/bin/sh' > /usr/local/microchip/Libero_SoC_2025.2/LicenseDaemons/snpslmd && \
+    echo 'export LD_PRELOAD=/usr/local/microchip/Libero_SoC_2025.2/LicenseDaemons/snpslmd-workaround.so' >> /usr/local/microchip/Libero_SoC_2025.2/LicenseDaemons/snpslmd && \
+    echo 'exec /usr/local/microchip/Libero_SoC_2025.2/LicenseDaemons/snpslmd_bin "$@"' >> /usr/local/microchip/Libero_SoC_2025.2/LicenseDaemons/snpslmd && \
+    chmod +x /usr/local/microchip/Libero_SoC_2025.2/LicenseDaemons/snpslmd
 
 # =============================================================================
 # Entrypoint — sets PATH, starts license daemon, then runs user command
@@ -103,4 +100,3 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
-

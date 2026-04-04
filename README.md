@@ -1,73 +1,65 @@
-# Libero Docker
+# Microchip Libero SoC Docker
 
-Docker container for Microchip Libero SoC + SoftConsole on Ubuntu 22.04.
+Docker image containing Microchip's Libero SoC FPGA synthesis toolchain (Synplify, ModelSim, Designer, SmartHLS) for headless CI/CD and development use.
 
-## Quick Start (Pull Pre-Built Image)
+## Build
 
-For CI/CD and devcontainers — just pull, no build needed:
-
-```bash
-docker pull ghcr.io/edholmes2232/libero-docker:latest
-docker run -it --rm ghcr.io/edholmes2232/libero-docker:latest
-```
-
-## Building From Scratch
-
-Only needed when Libero releases a new version.
-
-### Prerequisites
-
-1. Extract your **Libero offline installer** `.zip` somewhere (e.g. `~/Downloads/Libero_SoC_2025.2_offline_lin/`)
-2. Place the **SoftConsole** `.run` file in its own folder (e.g. `~/Downloads/SoftConsole/`)
-3. Drop your **licence file** into `installer/license` in this repo
-
-### Build
+You need the Libero offline installer (e.g. `Libero_SoC_2025.2_offline_lin.zip`) extracted into a directory:
 
 ```bash
 docker build \
-    --build-context libero-installer=~/Downloads/Libero_SoC_2025.2_offline_lin \
-    --build-context softconsole-installer=~/Downloads/SoftConsole \
-    -t libero .
+    --build-context libero-installer=$HOME/Downloads/Libero_SoC_2025.2_offline_lin \
+    -t libero:2025.2 .
 ```
 
-Or use Docker Compose (reads paths from `.env`):
+The build verifies the installer MD5 checksum automatically.
+
+## Running & Licensing
+
+Libero requires a FlexLM license. The license is locked to a specific MAC address (hostid), so the container must be started with a matching MAC.
+
+**NOTE: Hostname of licence should not be `localhost` **
+
+### Quick Start (recommended)
+
+`run_docker.sh` parses your license file and sets the hostname/MAC automatically:
 
 ```bash
-docker compose build
+./run_docker.sh /path/to/your/Microchip/license.dat
 ```
 
-> ⚠️ Requires ~60GB temp disk space. Takes ~30 minutes.
-
-### Push to Registry
+### Manual
 
 ```bash
-echo $GITHUB_TOKEN | docker login ghcr.io -u edholmes2232 --password-stdin
-docker tag libero:latest ghcr.io/edholmes2232/libero-docker:latest
-docker push ghcr.io/edholmes2232/libero-docker:latest
+docker run -it --rm \
+    --hostname <YOUR_SERVER_HOSTNAME> \
+    --mac-address <YOUR_SERVER_MAC> \
+    -v /path/to/your/license.dat:/usr/local/microchip/license \
+    -v $(pwd):/workspace -w /workspace \
+    libero:2025.2 bash
 ```
 
-### Clean Up Build Cache
+The entrypoint automatically starts the FlexLM license daemon (`lmgrd`) and configures the environment. It also supports pointing to an external license server via `LM_LICENSE_FILE`:
 
 ```bash
-docker builder prune -a
+docker run -it --rm \
+    -e LM_LICENSE_FILE=1702@license-server.corp \
+    -v $(pwd):/workspace -w /workspace \
+    libero:2025.2 bash
 ```
 
-## VS Code Dev Container
+### snpslmd Docker Detection Workaround
 
-Open this project in VS Code → **"Reopen in Container"**. Pulls the pre-built image automatically.
+The Synopsys license daemon (`snpslmd`) detects Docker via `/proc/1/cgroup` and refuses to run. This image includes an `LD_PRELOAD` shim ([snpslmd-workaround.c](snpslmd-workaround.c)) that intercepts filesystem calls to hide container indicators, allowing the daemon to start normally.
 
-## Container Layout
+## Verification
 
-| Path | Purpose |
-|---|---|
-| `/usr/local/microchip/license/` | Licence file |
-| `/usr/local/microchip/Libero_SoC_2025.2/` | Libero SoC |
-| `/usr/local/microchip/SoftConsole-v2022.2-RISC-V-747/` | SoftConsole |
-| `/usr/local/bin/entrypoint.sh` | Sets PATH, starts license daemon |
+```bash
+./run_docker.sh /path/to/your/Microchip/license.dat
+container# cd /usr/local/microchip/Libero_SoC_2025.2/Libero_SoC/Designer/scripts/sample/
+container# libero script:run.tcl
+```
 
-## Environment
+## License
 
-The entrypoint automatically configures:
-- `PATH` for Libero, Synplify, ModelSim, and SoftConsole RISC-V toolchain
-- `LM_LICENSE_FILE` and `SNPSLMD_LICENSE_FILE` for licensing
-- Starts `lmgrd` license daemon in background on port 1702
+[MIT](LICENSE)

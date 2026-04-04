@@ -1,25 +1,19 @@
 #!/bin/bash
 set -e
 
-echo "Using custom entrypoint"
+echo "[entrypoint] Initializing Microchip Libero SoC Synthesis Environment..."
 
 # =============================================================================
 # Installation paths
 # =============================================================================
-export SC_INSTALL_DIR=/usr/local/microchip/SoftConsole-v2022.2-RISC-V-747
 export LIBERO_INSTALL_DIR=/usr/local/microchip/Libero_SoC_2025.2
 export LICENSE_DAEMON_DIR=$LIBERO_INSTALL_DIR/LicenseDaemons
 export LICENSE_FILE=/usr/local/microchip/license
 
 # =============================================================================
-# SoftConsole
-# =============================================================================
-export PATH=$PATH:$SC_INSTALL_DIR/riscv-unknown-elf-gcc/bin
-export FPGENPROG=$LIBERO_INSTALL_DIR/Libero_SoC/Designer/bin64/fpgenprog
-
-# =============================================================================
 # Libero
 # =============================================================================
+export FPGENPROG=$LIBERO_INSTALL_DIR/Libero_SoC/Designer/bin64/fpgenprog
 export PATH=$PATH:$LIBERO_INSTALL_DIR/Libero_SoC/Designer/bin:$LIBERO_INSTALL_DIR/Libero_SoC/Designer/bin64
 export PATH=$PATH:$LIBERO_INSTALL_DIR/Libero_SoC/Synplify_Pro/bin
 export PATH=$PATH:$LIBERO_INSTALL_DIR/Libero_SoC/ModelSim_Pro/linuxacoem
@@ -27,19 +21,23 @@ export LOCALE=C
 export LD_LIBRARY_PATH=/usr/lib/i386-linux-gnu:${LD_LIBRARY_PATH:-}
 
 # =============================================================================
-# License
+# License Check & Setup
+#
+# Three modes:
+#   1. Local license file mounted at /usr/local/microchip/license
+#      - Parse the SERVER line, start lmgrd locally
+#   2. User pre-set LM_LICENSE_FILE env var (e.g. 1702@license-server.corp)
+#      - Use their external server, skip local daemon
+#   3. Neither provided
+#      - Warn and continue (tools will fail on license checkout)
 # =============================================================================
-export LM_LICENSE_FILE=1702@localhost
-export SNPSLMD_LICENSE_FILE=1702@localhost
 
-# Create a non-root user to run the license daemon safely
-# (FlexLM vendor daemons famously crash or fail to write lock files if run as root)
+# Shared setup: temp dirs, cgroup spoof, flexlm user
 if ! id "flexlm" &>/dev/null; then
     useradd -r -s /bin/false flexlm
 fi
 
 # Ensure temp directories and logs are writable by the flexlm user
-# (Ubuntu 22.04 doesn't have /usr/tmp, so we symlink it to /tmp)
 if [ ! -d "/usr/tmp" ]; then
     ln -s /tmp /usr/tmp
 fi
@@ -49,194 +47,71 @@ chown -R flexlm:flexlm /var/log/microchip
 touch /var/log/microchip/lmgrd.log
 chown flexlm:flexlm /var/log/microchip/lmgrd.log
 
-# =============================================================================
-# snpslmd overlayfs AND Docker detection LD_PRELOAD hack
-# =============================================================================
-if [ ! -f "$LICENSE_DAEMON_DIR/snpslmd-hack.so" ]; then
-    echo "[entrypoint] Compiling LD_PRELOAD hack for snpslmd..."
-    
-    if ! command -v gcc &> /dev/null; then
-        echo "[entrypoint] installing gcc..."
-        apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -yqq gcc > /dev/null
-    fi
-    
-    # Generate a pristine, legitimate-looking cgroup file without docker references
-    echo "0::/user.slice/user-1000.slice/session-2.scope" > /usr/tmp/fake_cgroup
-    
-    cat << 'EOF' > /tmp/snpslmd-hack.c
-#define _GNU_SOURCE
-#include <stdio.h>
-#include <stdlib.h>
-#include <dirent.h>
-#include <dlfcn.h>
-#include <string.h>
-#include <fcntl.h>
-#include <stdarg.h>
-#include <sys/stat.h>
-#include <errno.h>
+# Generate a pristine, legitimate-looking cgroup file to spoof Docker detection
+echo "0::/user.slice/user-1000.slice/session-2.scope" > /usr/tmp/fake_cgroup
+chmod 644 /usr/tmp/fake_cgroup
 
-static int is_root = 0;
-static int d_ino = -1;
-
-static DIR *(*orig_opendir)(const char *name);
-static int (*orig_closedir)(DIR *dirp);
-static struct dirent *(*orig_readdir)(DIR *dirp);
-
-static int (*orig_open)(const char *pathname, int flags, ...);
-static int (*orig_open64)(const char *pathname, int flags, ...);
-static FILE *(*orig_fopen)(const char *pathname, const char *mode);
-static FILE *(*orig_fopen64)(const char *pathname, const char *mode);
-static int (*orig_access)(const char *pathname, int mode);
-static int (*orig_stat)(const char *pathname, struct stat *statbuf);
-static int (*orig_lstat)(const char *pathname, struct stat *statbuf);
-
-int is_docker(const char *pathname) {
-    if (!pathname) return 0;
-    if (strstr(pathname, "docker") || strstr(pathname, "lxc")) return 1;
-    return 0;
-}
-
-int is_cgroup(const char *pathname) {
-    if (!pathname) return 0;
-    if (strstr(pathname, "cgroup")) return 1;
-    return 0;
-}
-
-int access(const char *pathname, int mode) {
-    if (is_docker(pathname)) { errno = ENOENT; return -1; }
-    if (!orig_access) orig_access = dlsym(RTLD_NEXT, "access");
-    if (is_cgroup(pathname)) return orig_access("/usr/tmp/fake_cgroup", mode);
-    return orig_access(pathname, mode);
-}
-
-int stat(const char *pathname, struct stat *statbuf) {
-    if (is_docker(pathname)) { errno = ENOENT; return -1; }
-    if (!orig_stat) orig_stat = dlsym(RTLD_NEXT, "stat");
-    if (is_cgroup(pathname)) return orig_stat("/usr/tmp/fake_cgroup", statbuf);
-    return orig_stat(pathname, statbuf);
-}
-
-int lstat(const char *pathname, struct stat *statbuf) {
-    if (is_docker(pathname)) { errno = ENOENT; return -1; }
-    if (!orig_lstat) orig_lstat = dlsym(RTLD_NEXT, "lstat");
-    if (is_cgroup(pathname)) return orig_lstat("/usr/tmp/fake_cgroup", statbuf);
-    return orig_lstat(pathname, statbuf);
-}
-
-int open(const char *pathname, int flags, ...) {
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        va_list args; va_start(args, flags); mode = va_arg(args, mode_t); va_end(args);
-    }
-    if (is_docker(pathname)) { errno = ENOENT; return -1; }
-    if (!orig_open) orig_open = dlsym(RTLD_NEXT, "open");
-    if (is_cgroup(pathname)) return orig_open("/usr/tmp/fake_cgroup", flags, mode);
-    return orig_open(pathname, flags, mode);
-}
-
-int open64(const char *pathname, int flags, ...) {
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        va_list args; va_start(args, flags); mode = va_arg(args, mode_t); va_end(args);
-    }
-    if (is_docker(pathname)) { errno = ENOENT; return -1; }
-    if (!orig_open64) orig_open64 = dlsym(RTLD_NEXT, "open64");
-    if (is_cgroup(pathname)) return orig_open64("/usr/tmp/fake_cgroup", flags, mode);
-    return orig_open64(pathname, flags, mode);
-}
-
-FILE *fopen(const char *pathname, const char *mode) {
-    if (is_docker(pathname)) { errno = ENOENT; return NULL; }
-    if (!orig_fopen) orig_fopen = dlsym(RTLD_NEXT, "fopen");
-    if (is_cgroup(pathname)) return orig_fopen("/usr/tmp/fake_cgroup", mode);
-    return orig_fopen(pathname, mode);
-}
-
-FILE *fopen64(const char *pathname, const char *mode) {
-    if (is_docker(pathname)) { errno = ENOENT; return NULL; }
-    if (!orig_fopen64) orig_fopen64 = dlsym(RTLD_NEXT, "fopen64");
-    if (is_cgroup(pathname)) return orig_fopen64("/usr/tmp/fake_cgroup", mode);
-    return orig_fopen64(pathname, mode);
-}
-
-DIR *opendir(const char *name) {
-  if (strcmp(name, "/") == 0) is_root = 1;
-  if (!orig_opendir) orig_opendir = dlsym(RTLD_NEXT, "opendir");
-  return orig_opendir(name);
-}
-
-int closedir(DIR *dirp) {
-  is_root = 0;
-  if (!orig_closedir) orig_closedir = dlsym(RTLD_NEXT, "closedir");
-  return orig_closedir(dirp);
-}
-
-struct dirent *readdir(DIR *dirp) {
-  if (!orig_readdir) orig_readdir = dlsym(RTLD_NEXT, "readdir");
-  struct dirent *r = orig_readdir(dirp);
-  if (is_root && r) {
-    if (strcmp(r->d_name, ".") == 0 || strcmp(r->d_name, "..") == 0) {
-      r->d_ino = d_ino;
-    }
-  }
-  return r;
-}
-
-static __attribute__((constructor)) void init_methods() {
-  orig_opendir = dlsym(RTLD_NEXT, "opendir");
-  orig_closedir = dlsym(RTLD_NEXT, "closedir");
-  orig_readdir = dlsym(RTLD_NEXT, "readdir");
-  DIR *d = orig_opendir("/");
-  struct dirent *e = orig_readdir(d);
-  while (e) {
-    if (strcmp(e->d_name, ".") == 0) {
-      d_ino = e->d_ino;
-      break;
-    }
-    e = orig_readdir(d);
-  }
-  orig_closedir(d);
-}
-EOF
-
-    gcc -ldl -shared -fPIC /tmp/snpslmd-hack.c -o "$LICENSE_DAEMON_DIR/snpslmd-hack.so"
-    
-    if [ ! -f "$LICENSE_DAEMON_DIR/snpslmd_bin" ]; then
-        mv "$LICENSE_DAEMON_DIR/snpslmd" "$LICENSE_DAEMON_DIR/snpslmd_bin"
-        
-        # Install strace for debugging
-        if ! command -v strace &> /dev/null; then
-            echo "[entrypoint] installing strace..."
-            apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -yqq strace > /dev/null
-        fi
-
-        cat << 'EOF' > "$LICENSE_DAEMON_DIR/snpslmd"
-#!/bin/sh
-export LD_PRELOAD=$LICENSE_DAEMON_DIR/snpslmd-hack.so
-exec strace -f -e trace=open,openat,access,stat,lstat,readlink,statfs,fstatfs,getdents64 -o /tmp/snpslmd_trace.txt "$LICENSE_DAEMON_DIR/snpslmd_bin" "$@"
-EOF
-        sed -i "s|\$LICENSE_DAEMON_DIR|$LICENSE_DAEMON_DIR|g" "$LICENSE_DAEMON_DIR/snpslmd"
-        chmod +x "$LICENSE_DAEMON_DIR/snpslmd"
-    fi
-fi
-
-# Start license daemon in background as the non-root user
 if [ -f "$LICENSE_FILE" ]; then
-    echo "[entrypoint] Starting license daemon as 'flexlm' user..."
+    # -- Mode 1: Local license file provided --
+    # Parse "SERVER <hostname> <hostid> <port>" from the first SERVER line
+    LICENSE_HOST=$(awk '/^SERVER/{print $2; exit}' "$LICENSE_FILE")
+    LICENSE_PORT=$(awk '/^SERVER/{print $4; exit}' "$LICENSE_FILE")
+    LICENSE_HOST=${LICENSE_HOST:-localhost}
+    LICENSE_PORT=${LICENSE_PORT:-1702}
+
+    export LM_LICENSE_FILE="${LICENSE_PORT}@${LICENSE_HOST}"
+    export SNPSLMD_LICENSE_FILE="${LICENSE_PORT}@${LICENSE_HOST}"
+    echo "[entrypoint] Parsed license: ${LM_LICENSE_FILE} (from mounted license file)"
+
+    # -- MAC address validation --
+    # FlexLM locks the license to a specific MAC (hostid). Parse it from the
+    # SERVER line (field 3, e.g. "a1b2c3d4e5f6") and verify a matching
+    # interface exists in this container.
+    LICENSE_MAC_RAW=$(awk '/^SERVER/{print tolower($3); exit}' "$LICENSE_FILE")
+    if [ -n "$LICENSE_MAC_RAW" ]; then
+        # Format raw "e897447848b1" → "e8:97:44:78:48:b1"
+        LICENSE_MAC=$(echo "$LICENSE_MAC_RAW" | sed 's/\(..\)/\1:/g; s/:$//')
+        # Grab all MACs from container interfaces
+        CONTAINER_MACS=$(ip link show 2>/dev/null | awk '/link\/ether/{print $2}' | tr '[:upper:]' '[:lower:]')
+
+        if ! echo "$CONTAINER_MACS" | grep -qF "$LICENSE_MAC"; then
+            echo "==========================================================================="
+            echo " ERROR: MAC address mismatch"
+            echo "==========================================================================="
+            echo " License expects hostid: $LICENSE_MAC_RAW ($LICENSE_MAC)"
+            echo " Container interfaces:   $(echo $CONTAINER_MACS | tr '\n' ' ')"
+            echo ""
+            echo " Fix: spoof the MAC when starting the container:"
+            echo "   docker run --mac-address $LICENSE_MAC ..."
+            echo "==========================================================================="
+            exit 1
+        fi
+        echo "[entrypoint] MAC address verified: $LICENSE_MAC"
+    fi
+
+    echo "[entrypoint] Starting FlexNet license daemon (lmgrd)..."
     su -s /bin/bash flexlm -c "$LICENSE_DAEMON_DIR/lmgrd -c $LICENSE_FILE -l /var/log/microchip/lmgrd.log" &
-    # Wait a solid 6 seconds to let snpslmd fully initialize and crash
-    sleep 8
-    
-    echo "================================================"
-    echo "          SNPSLMD BACKGROUND TRACE DUMP         "
-    echo "================================================"
-    grep -E -v "localtime|zoneinfo|locale|\.so|libnss|host\.conf|ld\.so|resolv" /tmp/snpslmd_trace.txt | tail -n 80 2>/dev/null || true
-    echo "================================================"
-    
-    echo "[entrypoint] License daemon started (log: /var/log/microchip/lmgrd.log)"
+    sleep 2
+    echo "[entrypoint] License daemon started. Log: /var/log/microchip/lmgrd.log"
+
+elif [ -n "${LM_LICENSE_FILE:-}" ]; then
+    # -- Mode 2: User provided LM_LICENSE_FILE via env var --
+    export SNPSLMD_LICENSE_FILE="$LM_LICENSE_FILE"
+    echo "[entrypoint] Using external license server: $LM_LICENSE_FILE"
+    echo "[entrypoint] Skipping local lmgrd daemon startup."
+
 else
-    echo "[entrypoint] WARNING: No license file at $LICENSE_FILE — daemon not started."
+    # -- Mode 3: No license at all --
+    echo "==========================================================================="
+    echo " WARNING: No license configured"
+    echo "==========================================================================="
+    echo " Option A: Mount a license file:"
+    echo "   docker run -v /path/to/license.dat:/usr/local/microchip/license ..."
+    echo " "
+    echo " Option B: Point to an external license server:"
+    echo "   docker run -e LM_LICENSE_FILE=1702@license-server.corp ..."
+    echo "==========================================================================="
 fi
 
-# Hand off to user's command (bash, libero_soc, CI script, etc.)
+# Hand off 
 exec "$@"
