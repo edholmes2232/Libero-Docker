@@ -79,6 +79,10 @@ RUN --mount=type=bind,from=libero-installer,target=/mnt/installer \
     CommonDir=/usr/local/microchip/common \
     --verbose
 
+# Symlink Ubuntu certs to RHEL location
+RUN mkdir -p /etc/pki/tls/certs && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
+
 # =============================================================================
 # Step 3: Compile snpslmd overlayfs workaround & wrapper
 # =============================================================================
