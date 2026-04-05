@@ -25,6 +25,11 @@ The entrypoint supports three modes:
 | **External license server** | Set `-e LM_LICENSE_FILE=1702@license-server.corp` |
 | **No license** | Container starts with a warning; tools will fail on checkout |
 
+
+## Vault
+The default vault is located at `/usr/local/microchip/common/vault`. It is recommended to mount a local dir at this location to persist your vault contents. e.g. 
+`$ docker ... -v /path/to/local/vault:/usr/local/microchip/common/vault:rw ...`
+
 ### Manual Run
 
 ```bash
@@ -33,6 +38,7 @@ docker run -it --rm \
     --mac-address <YOUR_SERVER_MAC> \
     -v /path/to/your/license.dat:/usr/local/microchip/license \
     -v $(pwd):/workspace -w /workspace \
+    -v /path/to/local/vault:/usr/local/microchip/common/vault:rw \
     libero:2025.2 bash
 ```
 
